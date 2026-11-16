@@ -55,7 +55,7 @@ const env = {
   markerVersion: '2.2.0',
   torchVersion: '2.15.0+cpu',
   cuda: false,
-  vlm: { backend: 'vllm', available: true, target: 'docker' },
+  vlm: { backend: 'llamacpp', available: true, target: 'llama-server' },
   checkedAt: new Date().toISOString(),
 }
 
