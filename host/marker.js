@@ -120,16 +120,81 @@ export function createMarkerRuntime(config = {}) {
     child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
   })
 
+  /** 显式指定的 VLM 后端（配置优先，其次进程环境）。 */
+  const explicitBackend = () => {
+    const value = config.suryaBackend || process.env.SURYA_INFERENCE_BACKEND
+    return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+  }
+
+  /** 显式指定的外部推理服务地址。 */
+  const explicitUrl = () => {
+    const value = config.suryaInferenceUrl || process.env.SURYA_INFERENCE_URL
+    return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+  }
+
+  let llamaCache = { at: 0, value: undefined }
+
   /**
-   * 传给 marker 子进程的 Surya/VLM 相关环境变量：配置优先，其次沿用进程环境。
-   * @returns {object} 需要注入的环境变量
+   * 找 llama-server：配置 → 环境变量 → 数据目录里的 llama.cpp 解压件 → PATH。
+   * @param {boolean} force 忽略缓存
+   * @returns {Promise<string | undefined>} 可执行文件路径
    */
-  const suryaEnv = () => {
+  const resolveLlama = async (force = false) => {
+    if (!force && llamaCache.value !== undefined && now() - llamaCache.at < 60_000) return llamaCache.value
+    const candidates = [
+      typeof config.llamaCppBinary === 'string' && config.llamaCppBinary.trim() !== ''
+        ? path.resolve(config.llamaCppBinary.trim())
+        : undefined,
+      process.env.LLAMA_CPP_BINARY,
+      path.join(dirs.root, 'llama', IS_WIN ? 'llama-server.exe' : 'llama-server'),
+    ].filter((value) => typeof value === 'string' && value !== '')
+    let found = candidates.find((candidate) => {
+      try { return fs.statSync(candidate).isFile() } catch { return false }
+    })
+    if (found === undefined) {
+      // 解压后可能多套一层目录，最多向下找三层。
+      const root = path.join(dirs.root, 'llama')
+      const scan = (dir, depth) => {
+        if (depth > 3 || !fs.existsSync(dir)) return undefined
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name)
+          if (entry.isFile() && /^llama-server(\.exe)?$/i.test(entry.name)) return full
+          if (entry.isDirectory()) {
+            const nested = scan(full, depth + 1)
+            if (nested !== undefined) return nested
+          }
+        }
+        return undefined
+      }
+      found = scan(root, 0)
+    }
+    if (found === undefined) found = await which(IS_WIN ? 'llama-server.exe' : 'llama-server')
+    llamaCache = { at: now(), value: found }
+    return found
+  }
+
+  /**
+   * 传给 marker 子进程的 Surya/VLM 环境变量。后端总是显式给出，
+   * 免得 surya 按 nvidia-smi 自己猜成要 Docker 的 vLLM。
+   * @returns {Promise<object>} 需要注入的环境变量
+   */
+  const buildSuryaEnv = async () => {
     const env = {}
-    const backend = config.suryaBackend || process.env.SURYA_INFERENCE_BACKEND
-    if (typeof backend === 'string' && backend.trim() !== '') env.SURYA_INFERENCE_BACKEND = backend.trim()
-    const url = config.suryaInferenceUrl || process.env.SURYA_INFERENCE_URL
-    if (typeof url === 'string' && url.trim() !== '') env.SURYA_INFERENCE_URL = url.trim()
+    const url = explicitUrl()
+    if (url !== undefined) env.SURYA_INFERENCE_URL = url
+    const backend = explicitBackend()
+    if (backend !== undefined) env.SURYA_INFERENCE_BACKEND = backend
+    if (backend === undefined && url === undefined) {
+      const llama = await resolveLlama()
+      if (llama !== undefined) {
+        env.SURYA_INFERENCE_BACKEND = 'llamacpp'
+        env.LLAMA_CPP_BINARY = llama
+      }
+    }
+    if (env.SURYA_INFERENCE_BACKEND === 'llamacpp') {
+      const llama = await resolveLlama()
+      if (llama !== undefined) env.LLAMA_CPP_BINARY = llama
+    }
     if (config.suryaInferenceParallel !== undefined) env.SURYA_INFERENCE_PARALLEL = String(config.suryaInferenceParallel)
     if (typeof config.vllmGpus === 'string' && config.vllmGpus.trim() !== '') env.VLLM_GPUS = config.vllmGpus.trim()
     return env
@@ -143,14 +208,6 @@ export function createMarkerRuntime(config = {}) {
     } catch {
       return undefined
     }
-  }
-
-  /** 本机是否有 NVIDIA GPU（surya 自己也用 nvidia-smi 判断，不看 torch）。 */
-  const hasNvidiaGpu = async () => {
-    const smi = await which('nvidia-smi')
-    if (smi === undefined) return false
-    const result = await run(smi, ['-L'], { limit: 4000 })
-    return result.code === 0 && result.stdout.includes('GPU')
   }
 
   /** Docker 守护进程是否真的在跑（CLI 装了但没启动是最常见的情况）。 */
@@ -178,26 +235,18 @@ export function createMarkerRuntime(config = {}) {
    */
   const checkVlm = async (force = false) => {
     if (!force && vlmCache.value !== undefined && now() - vlmCache.at < 60_000) return vlmCache.value
-    const env = suryaEnv()
-    const explicitUrl = env.SURYA_INFERENCE_URL
+    const url = explicitUrl()
+    const backend = explicitBackend()
     let value
-    if (explicitUrl !== undefined) {
-      const healthy = await probeHealth(explicitUrl)
+    if (url !== undefined) {
+      const healthy = await probeHealth(url)
       value = {
         backend: 'external',
-        target: explicitUrl,
+        target: url,
         available: healthy,
-        reason: healthy ? undefined : `已配置 SURYA_INFERENCE_URL=${explicitUrl}，但 /health 没有响应`,
+        reason: healthy ? undefined : `已配置 SURYA_INFERENCE_URL=${url}，但 /health 没有响应`,
       }
-    } else if (env.SURYA_INFERENCE_BACKEND === 'llamacpp' || (!env.SURYA_INFERENCE_BACKEND && !(await hasNvidiaGpu()))) {
-      const server = await which('llama-server')
-      value = {
-        backend: 'llamacpp',
-        target: server,
-        available: server !== undefined,
-        reason: server === undefined ? '没有找到 llama-server（llama.cpp 没装）' : undefined,
-      }
-    } else if (env.SURYA_INFERENCE_BACKEND === 'vllm' || env.SURYA_INFERENCE_BACKEND === undefined) {
+    } else if (backend === 'vllm') {
       const docker = await which('docker')
       const up = docker === undefined ? false : await dockerDaemonUp()
       value = {
@@ -208,8 +257,27 @@ export function createMarkerRuntime(config = {}) {
           ? '没有找到 docker 命令（vLLM 后端需要 Docker）'
           : up ? undefined : 'Docker 已安装但守护进程没在运行（Docker Desktop 没启动）',
       }
+    } else if (backend === 'mlx') {
+      value = { backend: 'mlx', available: false, reason: 'mlx 后端只在 Apple Silicon 上可用' }
     } else {
-      value = { backend: String(env.SURYA_INFERENCE_BACKEND), available: false, reason: '未知的 SURYA_INFERENCE_BACKEND 取值' }
+      // 默认策略：本机有 llama.cpp 就用它（轻量、不需要 Docker），否则看 Docker 里的 vLLM。
+      const llama = await resolveLlama()
+      if (llama !== undefined) {
+        value = { backend: 'llamacpp', target: llama, available: true }
+      } else if (backend === 'llamacpp') {
+        value = { backend: 'llamacpp', available: false, reason: '没有找到 llama-server（llama.cpp 没装）' }
+      } else {
+        const docker = await which('docker')
+        const up = docker === undefined ? false : await dockerDaemonUp()
+        value = {
+          backend: 'vllm',
+          target: docker,
+          available: docker !== undefined && up,
+          reason: docker === undefined
+            ? '没有找到 docker 命令，也没有 llama-server（两条 GPU 路都没装）'
+            : up ? undefined : 'Docker 已安装但守护进程没在运行（Docker Desktop 没启动）',
+        }
+      }
     }
     vlmCache = { at: now(), value }
     return value
@@ -530,7 +598,7 @@ export function createMarkerRuntime(config = {}) {
 
     const child = spawn(cmd, cmdArgs, {
       windowsHide: true,
-      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1', ...suryaEnv() },
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1', ...(await buildSuryaEnv()) },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     job.child = child

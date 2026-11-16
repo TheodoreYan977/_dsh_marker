@@ -56,7 +56,16 @@ git clone https://github.com/TheodoreYan977/_dsh_marker.git "$env:USERPROFILE\ds
 | `vllm` | **必须有 VLM 服务** | 每页都走 VLM，精度最高、最慢；没有后端会直接失败 |
 | `auto` | — | 跟随 marker 默认：GPU 上是 balanced，CPU 上是 fast |
 
-VLM 后端有三种：NVIDIA 机器上自动选 **vLLM（跑在 Docker 里）**；其他平台用 **llama.cpp 的 `llama-server`**；或通过 `SURYA_INFERENCE_URL` 指向一个已经在跑的服务。面板的环境卡片会显示当前后端是否可用。
+VLM 后端有三种：本机的 **llama.cpp（`llama-server`）**、NVIDIA 机器上 **Docker 里的 vLLM**、或通过 `SURYA_INFERENCE_URL` 指向一个已经在跑的服务。面板的环境卡片会显示当前是哪个、是否可用。
+
+**插件按这个顺序自动挑后端**：`suryaInferenceUrl` → 配置里的 `suryaBackend` → 本机找到 `llama-server` 就用 llama.cpp（不需要 Docker）→ 否则看 Docker 守护进程是否在跑。
+
+### 装 llama.cpp 后端（推荐，不需要 Docker）
+
+1. 从 [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases) 下 Windows 包：`llama-<tag>-bin-win-cuda-<版本>-x64.zip`（按 `nvidia-smi` 里的 *CUDA UMD Version* 选 12.4 或 13.5），同版本号的 `cudart-llama-bin-win-cuda-<版本>-x64.zip`（运行库）；没有 NVIDIA 显卡就用 `-vulkan-x64` 或 `-cpu-x64`。
+2. 把两个 zip 都解压到 `~/.dsh-marker/llama/`（插件会在这个目录下递归找 `llama-server.exe`）。
+3. 首次跑 `balanced`/`vllm` 时，surya 会自动从 HuggingFace 下 `datalab-to/surya-ocr-2.5-gguf` 的两个 GGUF（`surya-2.5.gguf` + `surya-2.5-mmproj.gguf`），之后就不用再下。
+4. 想放到别的目录，就在 config 里写 `llamaCppBinary: D:\llama\llama-server.exe`。
 
 **页码范围从 0 开始**（marker 的语义）：要转第 4–29 页，填 `3-28`。
 
@@ -85,6 +94,7 @@ VLM 后端有三种：NVIDIA 机器上自动选 **vLLM（跑在 Docker 里）**�
     uv: C:\Users\you\.local\bin\uv.exe   # 一键安装用的 uv 路径
     # VLM 后端（balanced / vllm 用），不填则自动探测
     suryaBackend: llamacpp               # vllm | llamacpp | mlx；传给 SURYA_INFERENCE_BACKEND
+    llamaCppBinary: D:\llama\llama-server.exe     # 不填则找 <dataDir>\llama 与 PATH
     suryaInferenceUrl: http://127.0.0.1:8765/v1   # 指向已有服务，优先级最高
     suryaInferenceParallel: 4            # 并发请求数，默认按服务容量自动
     vllmGpus: '0,1'                      # 多卡时选显卡
