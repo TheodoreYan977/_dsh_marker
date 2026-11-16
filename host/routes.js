@@ -62,8 +62,22 @@ export function registerRoutes(ctx, runtime) {
 
   add('/convert', ['POST'], async (request) => {
     const body = await request.json().catch(() => ({}))
-    return json(200, await runtime.startConvert(body ?? {}))
+    try {
+      return json(200, await runtime.startConvert(body ?? {}))
+    } catch (error) {
+      // 客户端要能区分「模式不可用」和普通失败，好给出对应的下一步。
+      const blocked = error?.code === 'vlm-unavailable'
+      return json(blocked ? 409 : 400, {
+        error: String(error?.message || error),
+        code: error?.code,
+        vlm: error?.vlm,
+      })
+    }
   })
+
+  add('/vlm', ['GET', 'HEAD'], async (request) => json(200, await runtime.checkVlm(
+    query(request).searchParams.get('force') === '1',
+  )))
 
   add('/cancel', ['POST'], async (request) => {
     const body = await request.json().catch(() => ({}))

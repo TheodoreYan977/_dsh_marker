@@ -30,8 +30,15 @@ window.__ModuleLoader__.load({
         'env.python': 'Python',
         'env.marker': 'marker-pdf',
         'env.accelerator': '推理',
+        'env.vlm': 'VLM 后端',
+        'env.vlmOk': '可用',
+        'env.vlmNone': '不可用',
         'env.cpu': 'CPU（fast 模式）',
         'env.cuda': 'CUDA 可用',
+        'warn.vlmMode': '当前模式需要本机 VLM 推理服务，现在不可用：',
+        'warn.balancedDegrade': 'balanced 会把相关页面降级成 Indra OCR，精度略降；想要满精度先起 Docker（vLLM）或 llama.cpp。',
+        'action.retryFast': '改用 fast 重跑',
+        'result.warn': '提示',
         'file.dropTitle': '拖入 PDF / 图片 / Office 文件',
         'file.dropHint': '或点击选择文件（也可以直接粘贴本机绝对路径）',
         'file.choose': '选择文件',
@@ -83,8 +90,15 @@ window.__ModuleLoader__.load({
         'env.python': 'Python',
         'env.marker': 'marker-pdf',
         'env.accelerator': 'Accelerator',
+        'env.vlm': 'VLM backend',
+        'env.vlmOk': 'available',
+        'env.vlmNone': 'unavailable',
         'env.cpu': 'CPU (fast mode)',
         'env.cuda': 'CUDA available',
+        'warn.vlmMode': 'This mode needs a local VLM server, which is unavailable: ',
+        'warn.balancedDegrade': 'balanced falls back to Indra OCR for those pages, so accuracy drops a little. Start Docker (vLLM) or llama.cpp for full accuracy.',
+        'action.retryFast': 'Retry with fast',
+        'result.warn': 'Note',
         'file.dropTitle': 'Drop a PDF, image, or Office file',
         'file.dropHint': 'or click to choose a file (an absolute path works too)',
         'file.choose': 'Choose file',
@@ -190,6 +204,11 @@ window.__ModuleLoader__.load({
         margin: 0, maxHeight: '120px', overflow: 'auto', fontFamily: 'ui-monospace, Consolas, monospace',
         fontSize: '10px', whiteSpace: 'pre-wrap', color: token('label-secondary', '#666'),
       },
+      notice: {
+        border: `1px solid ${token('state-warn-secondary', '#f0d8a8')}`,
+        background: token('bg-layer-1', '#fffaf0'), color: token('state-warn-label', '#8a5a00'),
+        borderRadius: '8px', padding: '9px 10px', fontSize: '12px', lineHeight: 1.55,
+      },
       error: {
         border: `1px solid ${token('state-error-secondary', '#f0b4b4')}`, color: token('state-error-primary', '#b42318'),
         background: token('bg-layer-1', '#fff5f5'), borderRadius: '8px', padding: '10px', fontSize: '12px',
@@ -213,7 +232,12 @@ window.__ModuleLoader__.load({
     const fetchJson = async (path, init) => {
       const response = await fetch(`${API}${path}`, { cache: 'no-store', ...init })
       const body = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`)
+      if (!response.ok) {
+        const error = new Error(body?.error || `HTTP ${response.status}`)
+        error.code = body?.code
+        error.body = body
+        throw error
+      }
       return body
     }
 
@@ -256,16 +280,23 @@ window.__ModuleLoader__.load({
       const [job, setJob] = useState(null)
       const [result, setResult] = useState(null)
       const [error, setError] = useState(null)
+      const [errorCode, setErrorCode] = useState(null)
       const [dragOver, setDragOver] = useState(false)
       const [copied, setCopied] = useState(false)
       const fileInput = useRef(null)
+
+      /** 统一记录失败：保留 error.code，好让面板给出对应的下一步。 */
+      const fail = (cause) => {
+        setError(String(cause?.message ?? cause))
+        setErrorCode(cause?.code ?? null)
+      }
 
       const loadEnv = useCallback(async (force) => {
         setProbing(true)
         try {
           setEnv(await fetchJson(`/env${force ? '?force=1' : ''}`))
         } catch (cause) {
-          setError(String(cause?.message || cause))
+          fail(cause)
         } finally {
           setProbing(false)
         }
@@ -285,20 +316,21 @@ window.__ModuleLoader__.load({
               setResult(full.result ?? null)
             }
           } catch (cause) {
-            setError(String(cause?.message || cause))
+            fail(cause)
           }
         }, 900)
         return () => clearInterval(timer)
       }, [job])
 
-      const startConvert = useCallback(async () => {
+      const startConvert = useCallback(async (modeOverride) => {
         setError(null)
+        setErrorCode(null)
         setResult(null)
         setCopied(false)
         try {
           const payload = {
             path: file ? file.path : pathInput.trim(),
-            mode,
+            mode: typeof modeOverride === 'string' ? modeOverride : mode,
             format,
             pageRange,
             forceOcr,
@@ -310,7 +342,7 @@ window.__ModuleLoader__.load({
             body: JSON.stringify(payload),
           }))
         } catch (cause) {
-          setError(String(cause?.message || cause))
+          fail(cause)
         }
       }, [file, pathInput, mode, format, pageRange, forceOcr])
 
@@ -323,7 +355,7 @@ window.__ModuleLoader__.load({
             body: JSON.stringify({ id: job.id }),
           })
         } catch (cause) {
-          setError(String(cause?.message || cause))
+          fail(cause)
         }
       }, [job])
 
@@ -342,7 +374,7 @@ window.__ModuleLoader__.load({
           setFile(saved)
           setPathInput('')
         } catch (cause) {
-          setError(String(cause?.message || cause))
+          fail(cause)
         }
       }, [])
 
@@ -351,7 +383,7 @@ window.__ModuleLoader__.load({
         try {
           setInstallJob(await fetchJson('/env/install', { method: 'POST' }))
         } catch (cause) {
-          setError(String(cause?.message || cause))
+          fail(cause)
         }
       }, [])
 
@@ -364,7 +396,7 @@ window.__ModuleLoader__.load({
             setInstallJob(next)
             if (next.status === 'done') await loadEnv(true)
           } catch (cause) {
-            setError(String(cause?.message || cause))
+            fail(cause)
           }
         }, 1200)
         return () => clearInterval(timer)
@@ -376,7 +408,7 @@ window.__ModuleLoader__.load({
           setCopied(true)
           setTimeout(() => setCopied(false), 1500)
         } catch (cause) {
-          setError(String(cause?.message || cause))
+          fail(cause)
         }
       }, [])
 
@@ -413,6 +445,11 @@ window.__ModuleLoader__.load({
             h('span', { style: styles.caption }, `${tr('env.python')}: ${env.pythonVersion ?? '—'}`),
             h('span', { style: styles.caption }, `${tr('env.marker')}: ${env.markerVersion ?? '—'}`),
             h('span', { style: styles.caption }, `${tr('env.accelerator')}: ${env.cuda ? tr('env.cuda') : tr('env.cpu')}`),
+          ),
+          env.vlm === undefined ? null : h('div', { style: styles.row },
+            h('span', { style: styles.caption },
+              `${tr('env.vlm')}: ${env.vlm.available ? tr('env.vlmOk') : tr('env.vlmNone')}`
+              + ` (${env.vlm.backend}${env.vlm.reason ? ` · ${env.vlm.reason}` : ''})`),
           ),
           !ready && !busyInstall ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
             h('p', { style: styles.cardTitle }, tr('env.setupTitle')),
@@ -517,11 +554,20 @@ window.__ModuleLoader__.load({
           ),
         ),
 
+        // 选中的模式要 VLM 而后端不可用时，先把话说在前面，别等跑完才报错。
+        (mode === 'vllm' || mode === 'balanced' || mode === 'auto') && env?.vlm?.available === false
+          ? h('div', { style: styles.notice },
+            h('strong', null, tr('result.warn')), ' ',
+            `${tr('warn.vlmMode')}${env.vlm.reason ?? env.vlm.backend}。`,
+            mode === 'vllm' ? '' : tr('warn.balancedDegrade'),
+          )
+          : null,
+
         h('div', { style: styles.row },
           h('button', {
             type: 'button', style: styles.button('primary'),
             disabled: !ready || running || (!file && pathInput.trim() === ''),
-            onClick: startConvert,
+            onClick: () => { void startConvert() },
           }, running ? tr('action.running') : tr('action.convert')),
           running ? h('button', { type: 'button', style: styles.button('ghost'), onClick: cancelJob }, tr('action.cancel')) : null,
           h('span', { style: { ...styles.caption, flex: '1 1 auto', textAlign: 'right' } },
@@ -534,8 +580,25 @@ window.__ModuleLoader__.load({
           h('pre', { style: styles.log }, (job.log ?? []).slice(-5).join('\n')),
         ) : null,
 
-        error ? h('div', { style: styles.error }, h('strong', null, `${tr('error.title')}: `), error) : null,
-        job?.status === 'error' ? h('div', { style: styles.error }, job.error ?? '') : null,
+        error ? h('div', { style: styles.error },
+          h('strong', null, `${tr('error.title')}: `), error,
+          errorCode === 'vlm-unavailable' ? h('div', { style: { marginTop: '8px' } },
+            h('button', {
+              type: 'button', style: styles.button('primary'),
+              onClick: () => { setMode('fast'); setError(null); setErrorCode(null) },
+            }, tr('action.retryFast')),
+          ) : null,
+        ) : null,
+        job?.status === 'error' ? h('div', { style: styles.error },
+          job.errorHint === undefined ? null : h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, job.errorHint),
+          job.error ?? '',
+          h('div', { style: { marginTop: '8px' } },
+            h('button', {
+              type: 'button', style: styles.button('ghost'),
+              onClick: () => { setMode('fast'); setJob(null); void startConvert('fast') },
+            }, tr('action.retryFast')),
+          ),
+        ) : null,
 
         result === null ? h('div', { style: { ...styles.card, gap: '4px' } },
           h('p', { style: styles.cardTitle }, tr('result.title')),
@@ -562,6 +625,8 @@ window.__ModuleLoader__.load({
           h('span', { style: { ...styles.caption, wordBreak: 'break-all' } },
             `${tr('result.meta')}: ${result.outDir ?? '—'}`),
           result.truncated ? h('span', { style: styles.caption }, tr('result.truncated')) : null,
+          (job?.warnings ?? []).length === 0 ? null : h('div', { style: styles.notice },
+            h('strong', null, tr('result.warn')), ' ', job.warnings.join('；')),
           h('pre', { style: styles.pre }, result.text ?? ''),
           result.images && result.images.length > 0 ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
             h('span', { style: styles.caption }, `${tr('result.images')} (${result.images.length})`),

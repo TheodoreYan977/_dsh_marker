@@ -52,11 +52,25 @@ git clone https://github.com/TheodoreYan977/_dsh_marker.git "$env:USERPROFILE\ds
 |---|---|---|
 | `fast`（默认） | 纯 CPU | 内置 ONNX 版面分析 + OCR，最快，多数文档够用 |
 | `no_ocr` | 纯 CPU | 只读 PDF 文字层，最快但扫描件不行 |
-| `balanced` | 本机 GPU 推理服务 | 干净排版走 CPU，公式 / 复杂表格 / 扫描页才走 VLM |
-| `vllm` | 本机 GPU 推理服务 | 每页都走 VLM，精度最高、最慢 |
+| `balanced` | 有 VLM 更好 | 干净排版走 CPU；需要公式/复杂表格/扫描页时走 VLM，**没有 VLM 会自动降级成 Indra OCR**（精度略降，不会失败） |
+| `vllm` | **必须有 VLM 服务** | 每页都走 VLM，精度最高、最慢；没有后端会直接失败 |
 | `auto` | — | 跟随 marker 默认：GPU 上是 balanced，CPU 上是 fast |
 
-`balanced` / `vllm` 依赖 marker 自带的 Surya 推理服务（NVIDIA 用 Docker + vLLM，其他平台用 llama.cpp 的 `llama-server`）。没有配就保持 `fast`。
+VLM 后端有三种：NVIDIA 机器上自动选 **vLLM（跑在 Docker 里）**；其他平台用 **llama.cpp 的 `llama-server`**；或通过 `SURYA_INFERENCE_URL` 指向一个已经在跑的服务。面板的环境卡片会显示当前后端是否可用。
+
+**页码范围从 0 开始**（marker 的语义）：要转第 4–29 页，填 `3-28`。
+
+## 故障排查
+
+| 现象 | 原因 | 怎么办 |
+|---|---|---|
+| 报 `SpawnError` / `docker: error during connect … pipe/dockerDesktopLinuxEngine` | 选了 `vllm`，surya 在这台机器上按 `nvidia-smi` 判定用 vLLM 后端，而它要 `docker run` 起服务，Docker Desktop 没启动 | ① 改用 `fast`（纯 CPU 够用）；② 启动 Docker Desktop 后重试；③ 装 llama.cpp 并配 `SURYA_INFERENCE_BACKEND=llamacpp`；④ 在 config 里设 `suryaInferenceUrl` 指向已有服务 |
+| 面板提示「balanced 会降级成 Indra OCR」 | 同上，但 balanced 不硬性要求 VLM | 想要满精度就先起后端，否则接受轻微精度下降 |
+| 报 `Invalid page range` | 页码越界，且从 0 开始 | 第 N 页填 `N-1` |
+| 转换很慢 / 内存不足 | 页数多或开了 `force_ocr` | 用页码范围分批，或用 `--mode no_ocr` |
+| 首次转换卡在下载 | 首次会拉 ONNX 模型 | 等它下完；设 `HF_TOKEN` 可提高限流阈值 |
+
+插件在发任务前会预检 VLM 后端：`vllm` 直接拒绝并说明原因（不会先跑十秒再抛 Python traceback）；`balanced`/`auto` 会在结果里标出「本次降级了」。
 
 ## 配置（可选）
 
@@ -69,6 +83,11 @@ git clone https://github.com/TheodoreYan977/_dsh_marker.git "$env:USERPROFILE\ds
     venvDir: D:\venvs\marker             # 虚拟环境目录，默认 <dataDir>/venv
     python: C:\Python312\python.exe      # 指定解释器（需已装 marker-pdf）
     uv: C:\Users\you\.local\bin\uv.exe   # 一键安装用的 uv 路径
+    # VLM 后端（balanced / vllm 用），不填则自动探测
+    suryaBackend: llamacpp               # vllm | llamacpp | mlx；传给 SURYA_INFERENCE_BACKEND
+    suryaInferenceUrl: http://127.0.0.1:8765/v1   # 指向已有服务，优先级最高
+    suryaInferenceParallel: 4            # 并发请求数，默认按服务容量自动
+    vllmGpus: '0,1'                      # 多卡时选显卡
 ```
 
 ## 数据与限制

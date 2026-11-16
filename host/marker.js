@@ -121,6 +121,134 @@ export function createMarkerRuntime(config = {}) {
   })
 
   /**
+   * 传给 marker 子进程的 Surya/VLM 相关环境变量：配置优先，其次沿用进程环境。
+   * @returns {object} 需要注入的环境变量
+   */
+  const suryaEnv = () => {
+    const env = {}
+    const backend = config.suryaBackend || process.env.SURYA_INFERENCE_BACKEND
+    if (typeof backend === 'string' && backend.trim() !== '') env.SURYA_INFERENCE_BACKEND = backend.trim()
+    const url = config.suryaInferenceUrl || process.env.SURYA_INFERENCE_URL
+    if (typeof url === 'string' && url.trim() !== '') env.SURYA_INFERENCE_URL = url.trim()
+    if (config.suryaInferenceParallel !== undefined) env.SURYA_INFERENCE_PARALLEL = String(config.suryaInferenceParallel)
+    if (typeof config.vllmGpus === 'string' && config.vllmGpus.trim() !== '') env.VLLM_GPUS = config.vllmGpus.trim()
+    return env
+  }
+
+  /** 查找可执行文件，返回绝对路径或 undefined。 */
+  const which = async (command) => {
+    try {
+      const found = await execFileAsync(IS_WIN ? 'where' : 'which', [command], { windowsHide: true })
+      return (found.stdout || '').split(/\r?\n/).filter(Boolean)[0]?.trim()
+    } catch {
+      return undefined
+    }
+  }
+
+  /** 本机是否有 NVIDIA GPU（surya 自己也用 nvidia-smi 判断，不看 torch）。 */
+  const hasNvidiaGpu = async () => {
+    const smi = await which('nvidia-smi')
+    if (smi === undefined) return false
+    const result = await run(smi, ['-L'], { limit: 4000 })
+    return result.code === 0 && result.stdout.includes('GPU')
+  }
+
+  /** Docker 守护进程是否真的在跑（CLI 装了但没启动是最常见的情况）。 */
+  const dockerDaemonUp = async () => {
+    const result = await run('docker', ['info', '--format', '{{.ServerVersion}}'], { limit: 4000 })
+    return result.code === 0
+  }
+
+  /** 探一下已有的推理服务是否健康。 */
+  const probeHealth = async (baseUrl) => {
+    try {
+      const response = await fetch(`${baseUrl.replace(/\/v1\/?$/, '')}/health`, { signal: AbortSignal.timeout(1500) })
+      return response.ok
+    } catch {
+      return false
+    }
+  }
+
+  let vlmCache = { at: 0, value: undefined }
+
+  /**
+   * 探测 balanced / vllm 需要的 VLM 推理后端是否可用。
+   * @param {boolean} force 忽略缓存
+   * @returns {Promise<object>} 后端信息
+   */
+  const checkVlm = async (force = false) => {
+    if (!force && vlmCache.value !== undefined && now() - vlmCache.at < 60_000) return vlmCache.value
+    const env = suryaEnv()
+    const explicitUrl = env.SURYA_INFERENCE_URL
+    let value
+    if (explicitUrl !== undefined) {
+      const healthy = await probeHealth(explicitUrl)
+      value = {
+        backend: 'external',
+        target: explicitUrl,
+        available: healthy,
+        reason: healthy ? undefined : `已配置 SURYA_INFERENCE_URL=${explicitUrl}，但 /health 没有响应`,
+      }
+    } else if (env.SURYA_INFERENCE_BACKEND === 'llamacpp' || (!env.SURYA_INFERENCE_BACKEND && !(await hasNvidiaGpu()))) {
+      const server = await which('llama-server')
+      value = {
+        backend: 'llamacpp',
+        target: server,
+        available: server !== undefined,
+        reason: server === undefined ? '没有找到 llama-server（llama.cpp 没装）' : undefined,
+      }
+    } else if (env.SURYA_INFERENCE_BACKEND === 'vllm' || env.SURYA_INFERENCE_BACKEND === undefined) {
+      const docker = await which('docker')
+      const up = docker === undefined ? false : await dockerDaemonUp()
+      value = {
+        backend: 'vllm',
+        target: docker,
+        available: docker !== undefined && up,
+        reason: docker === undefined
+          ? '没有找到 docker 命令（vLLM 后端需要 Docker）'
+          : up ? undefined : 'Docker 已安装但守护进程没在运行（Docker Desktop 没启动）',
+      }
+    } else {
+      value = { backend: String(env.SURYA_INFERENCE_BACKEND), available: false, reason: '未知的 SURYA_INFERENCE_BACKEND 取值' }
+    }
+    vlmCache = { at: now(), value }
+    return value
+  }
+
+  /** 把 vllm/balanced 不可用的原因写成一句可操作的话。 */
+  const vlmBlockedMessage = (vlm) => [
+    `「vllm」模式要求本机有可用的 VLM 推理服务，现在是不可用：${vlm.reason ?? '未检测到后端'}。`,
+    '四种解法：',
+    '① 直接改用 fast（纯 CPU，数字版 PDF 效果已经不错）或 balanced（缺 VLM 时会自动降级到 Indra OCR）；',
+    '② 启动 Docker Desktop 后重试（vLLM 后端会在容器里跑）；',
+    '③ 装 llama.cpp，并配置 SURYA_INFERENCE_BACKEND=llamacpp（不需要 Docker）；',
+    '④ 已有推理服务时，在插件 config 里设 suryaInferenceUrl 指过去。',
+  ].join('')
+
+  /** 把常见失败翻译成一句人话。 */
+  const explainFailure = (text) => {
+    if (/dockerDesktopLinuxEngine|docker: error during connect|pipe\/docker/i.test(text)) {
+      return 'Docker 没在运行：vLLM 后端要用 docker run 起服务。启动 Docker Desktop 后重试，或改用 fast。'
+    }
+    if (/SpawnError|failed to spawn|server unavailable/i.test(text)) {
+      return 'VLM 推理服务启动失败，这一模式依赖它；改用 fast 或 balanced 可以绕过。'
+    }
+    if (/CUDA out of memory|OutOfMemoryError|DefaultCPUAllocator: can't allocate/i.test(text)) {
+      return '内存/显存不足：改用 fast 模式，或用页码范围分批转换。'
+    }
+    if (/HF_TOKEN|rate limit|401 Client Error/i.test(text)) {
+      return '首次下载模型时被 HuggingFace 限流：设置 HF_TOKEN 后重试。'
+    }
+    if (/Invalid page range|must be between/i.test(text)) {
+      return '页码范围超出文档页数；注意页码从 0 开始，第 4 页要填 3。'
+    }
+    if (/No such file|not found: .*\.pdf|找不到文件/i.test(text)) {
+      return '找不到输入文件，检查路径是否还有效。'
+    }
+    return undefined
+  }
+
+  /**
    * 探测 Python 与 marker-pdf 是否可用。
    * @param {boolean} force 忽略缓存
    * @returns {Promise<object>} 环境信息
@@ -156,6 +284,7 @@ export function createMarkerRuntime(config = {}) {
         continue
       }
     }
+    const vlm = await checkVlm()
     const value = {
       ready: Boolean(found && found.marker),
       dataDir: dirs.root,
@@ -170,6 +299,7 @@ export function createMarkerRuntime(config = {}) {
       markerVersion: found?.marker || null,
       torchVersion: found?.torch || null,
       cuda: Boolean(found?.cuda),
+      vlm,
       checkedAt: new Date().toISOString(),
     }
     probeCache = { at: now(), value }
@@ -185,6 +315,8 @@ export function createMarkerRuntime(config = {}) {
     file: job.file,
     options: job.options,
     error: job.error,
+    errorHint: job.errorHint,
+    warnings: job.warnings,
     log: job.log.slice(-40),
     startedAt: job.startedAt,
     endedAt: job.endedAt,
@@ -336,8 +468,22 @@ export function createMarkerRuntime(config = {}) {
     const env = await probe()
     if (!env.ready) throw new Error('Marker 环境尚未就绪，请先在面板里安装')
 
+    // 预检：vllm 每页都要 VLM，缺后端就直接说清楚；balanced 缺后端会自己降级。
+    const vlm = await checkVlm()
+    if (mode === 'vllm' && !vlm.available) {
+      const blocked = new Error(vlmBlockedMessage(vlm))
+      blocked.code = 'vlm-unavailable'
+      blocked.vlm = vlm
+      throw blocked
+    }
+    const warnings = []
+    if (!vlm.available && (mode === 'balanced' || mode === 'auto')) {
+      warnings.push(`balanced/auto 需要 VLM 的页面会自动降级成 Indra OCR（${vlm.reason ?? 'VLM 不可用'}），精度会低一些`)
+    }
+
     const job = createJob('convert', {
       file,
+      warnings,
       options: {
         format,
         mode,
@@ -384,7 +530,7 @@ export function createMarkerRuntime(config = {}) {
 
     const child = spawn(cmd, cmdArgs, {
       windowsHide: true,
-      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1', ...suryaEnv() },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     job.child = child
@@ -396,6 +542,7 @@ export function createMarkerRuntime(config = {}) {
     child.on('error', (error) => {
       job.status = 'error'
       job.error = String(error?.message || error)
+      job.errorHint = explainFailure(job.error)
       job.endedAt = now()
       job.child = undefined
     })
@@ -410,6 +557,7 @@ export function createMarkerRuntime(config = {}) {
       if (code !== 0) {
         job.status = 'error'
         job.error = job.log.slice(-6).join('\n') || `Marker 退出码 ${code}`
+        job.errorHint = explainFailure(job.log.join('\n'))
         job.stage = '转换失败'
         return
       }
@@ -419,6 +567,11 @@ export function createMarkerRuntime(config = {}) {
         job.progress = 100
         const pages = job.result.pages === undefined ? '' : `${job.result.pages} 页 · `
         job.stage = `完成 · ${pages}${job.result.text.length} 字符`
+        // marker 在 balanced 下自己降级时，只在日志里说一句；把它抬到结果里提醒一次。
+        const degraded = job.log.some((line) => /falling back to Indra/i.test(line))
+        if (degraded) {
+          job.warnings = [...(job.warnings ?? []), '本次转换中 VLM 不可用，相关页面已降级为 Indra OCR']
+        }
       } catch (error) {
         job.status = 'error'
         job.error = String(error?.message || error)
@@ -491,6 +644,7 @@ export function createMarkerRuntime(config = {}) {
   return {
     dirs,
     probe,
+    checkVlm,
     startConvert,
     startInstall,
     cancel,
