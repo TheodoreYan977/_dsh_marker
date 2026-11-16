@@ -4,6 +4,26 @@
   "private": true,
   "type": "module",
   "description": "Marker 文档转换：把 PDF、图片、Office 文件转成 Markdown / JSON / HTML / chunks，在右侧栏直接转换与预览。",
+  "license": "Apache-2.0",
+  "author": "TheodoreYan977",
+  "homepage": "https://github.com/TheodoreYan977/_dsh_marker#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TheodoreYan977/_dsh_marker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TheodoreYan977/_dsh_marker/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "marker",
+    "pdf",
+    "ocr",
+    "markdown"
+  ],
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -17,7 +37,9 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "README.md"
+    "docs",
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {

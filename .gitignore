@@ -1,4 +1,5 @@
-.venv/
+﻿.venv/
 .test-out/
+.test/preview/.chrome-profile/
 node_modules/
 *.log

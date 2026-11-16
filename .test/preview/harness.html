@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Marker 面板预览</title>
+<style>
+  :root {
+    --dsw-alias-label-primary: #1b1b1c;
+    --dsw-alias-label-secondary: #5b5d63;
+    --dsw-alias-label-tertiary: #8b8d94;
+    --dsw-alias-label-on-color: #ffffff;
+    --dsw-alias-bg-base: #ffffff;
+    --dsw-alias-bg-layer-1: #f7f7f8;
+    --dsw-alias-bg-layer-2: #ececee;
+    --dsw-alias-border-l1: #f0f0f1;
+    --dsw-alias-border-l2: #e3e3e6;
+    --dsw-alias-border-l3: #d2d2d6;
+    --dsw-alias-card-fill: #fafafb;
+    --dsw-alias-brand-primary: #1f6feb;
+    --dsw-alias-button-primary-fill: #1f6feb;
+    --dsw-alias-button-primary-hover: #175fd0;
+    --dsw-alias-button-tool-bar-fill: #ffffff;
+    --dsw-alias-interactive-bg-hover: #eff5ff;
+    --dsw-alias-state-success-primary: #1a7f37;
+    --dsw-alias-state-error-primary: #b42318;
+    --dsw-alias-state-error-secondary: #f0b4b4;
+  }
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  #frame { width: 420px; padding: 0; }
+  #stage { width: 420px; height: 900px; overflow: hidden; }
+</style>
+</head>
+<body>
+  <div id="frame"><div id="stage"></div></div>
+  <script src="/.test/node_modules/react/umd/react.production.min.js"></script>
+  <script src="/.test/node_modules/react-dom/umd/react-dom.production.min.js"></script>
+  <script>window.__ModuleLoader__ = { load: (module) => { window.__DSH_MARKER_MODULE__ = module } }</script>
+  <script src="/client.js"></script>
+  <script src="/.test/preview/harness.js"></script>
+</body>
+</html>

@@ -395,7 +395,6 @@ window.__ModuleLoader__.load({
       const ready = env?.ready === true
       const running = job?.status === 'running'
       const busyInstall = installJob?.status === 'running'
-      const chosenName = file ? file.name : (pathInput.trim() ? pathInput.trim().split(/[\\/]/).pop() : '')
 
       return h('div', { style: styles.page, 'data-marker-panel': true },
         h('div', { style: styles.header },
@@ -458,7 +457,7 @@ window.__ModuleLoader__.load({
 
         file ? h('div', { style: styles.row },
           h('span', { style: { ...styles.caption, flex: '1 1 auto', wordBreak: 'break-all' } },
-            `${file.name} · ${humanSize(file.size)}`),
+            `${file.name}${file.size ? ` · ${humanSize(file.size)}` : ''}`),
           h('button', {
             type: 'button', style: styles.button('ghost'),
             onClick: () => { setFile(null); setJob(null); setResult(null) },
@@ -526,7 +525,7 @@ window.__ModuleLoader__.load({
           }, running ? tr('action.running') : tr('action.convert')),
           running ? h('button', { type: 'button', style: styles.button('ghost'), onClick: cancelJob }, tr('action.cancel')) : null,
           h('span', { style: { ...styles.caption, flex: '1 1 auto', textAlign: 'right' } },
-            chosenName ? `${chosenName}${job ? ` · ${humanMs(job.elapsedMs)}` : ''}` : ''),
+            job ? humanMs(job.elapsedMs) : ''),
         ),
 
         running ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
