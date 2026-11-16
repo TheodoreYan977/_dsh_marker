@@ -1,0 +1,4 @@
+.venv/
+.test-out/
+node_modules/
+*.log

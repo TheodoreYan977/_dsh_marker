@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Marker 文档转换",
+    "description": "用 datalab Marker 把 PDF、图片、Office 文件转成 Markdown、JSON、HTML 或 chunks。入口有两处：右侧栏的「+」新增页签里的 Marker 卡片，或左侧栏底部的 Marker 按钮；把文件拖进面板（或粘贴本机路径），选模式和输出格式，点「开始转换」，结果可直接预览、复制全文、下载文件。首次使用会在用户目录下建独立虚拟环境并安装 marker-pdf（约 1–3 GB，需联网，只需一次）。fast 与 no_ocr 走 CPU；balanced 与 vllm 需要本机 GPU 推理服务（NVIDIA 用 Docker + vLLM，其他平台用 llama.cpp），没有就保持 fast。关闭插件只是隐藏面板，已转换的文件仍留在输出目录。"
+  }
+}

@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-marker
+      name: '@local/dsh-marker'
+      config: {}

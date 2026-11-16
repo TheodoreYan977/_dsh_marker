@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Marker convert",
+    "description": "Convert PDF, image, and Office files to Markdown, JSON, HTML, or chunks with datalab Marker. Open it from the right Sidebar's add control (the Marker card), or from Marker in the left Sidebar footer; drop a file or paste a local path, pick a mode and output format, then convert and read, copy, or download the result in place. The first use installs marker-pdf into a private virtual environment in your home folder (about 1–3 GB, one time, needs network). fast and no_ocr run on CPU; balanced and vllm need a local GPU inference server (vLLM in Docker on NVIDIA, llama.cpp elsewhere), so keep fast unless you set one up. Turning the plugin off only hides the panel: converted files stay in the output folder."
+  }
+}
